@@ -77,9 +77,9 @@ class rVAE(BaseVAE):
         """初始化优化器并保存为类成员变量"""
         if self.optG is None:  # 如果优化器还未创建
             if self.optim_type == "Adam":
-                self.optG = Adam(self.parameters(), lr=self.init_lr)
+                self.optG = Adam(self.parameters(), lr=self.init_lr, weight_decay=1e-5)
             elif self.optim_type == "SGD":
-                self.optG = SGD(self.parameters(), lr=self.init_lr)
+                self.optG = SGD(self.parameters(), lr=self.init_lr, weight_decay=1e-5)
             else:
                 raise ValueError(f"Optimizer {self.optim_type} not supported")
         return self.optG

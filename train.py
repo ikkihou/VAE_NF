@@ -56,6 +56,7 @@ def train_epoch(
     kl_loss_accum = 0
     elbo_accum = 0
     for _, data in enumerate(train_loader):
+        rvae.optG.zero_grad()
         data = data[0].to(rvae.device)
         elbo, log_p_x_g_z, kl_div = rvae(data)
         loss = -elbo
@@ -203,7 +204,12 @@ def main():
         activation=config["model"]["activation"],
         device=get_device(),
     )
+    # 自定义一个衰减函数，按 epoch 衰减
+    def lr_lambda(epoch):
+        return 0.95 ** epoch  # 每个 epoch 衰减 5%
+
     rvae.get_optim()
+    scheduler = torch.optim.lr_scheduler.LambdaLR(rvae.optG, lr_lambda)
     logger.info("Model Initialization Finish")
 
     ## train
@@ -212,6 +218,7 @@ def main():
         elbo_accum, gen_loss_accum, kl_loss_accum = train_epoch(
             rvae, train_loader, e, logger
         )
+        scheduler.step()
         if config["logging"]["wandb"]:
             wandb.log(
                 {
