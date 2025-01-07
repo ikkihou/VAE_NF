@@ -100,7 +100,6 @@ class SpatialGenerator(nn.Module):  ## p(X | z, \theta, \Delta_X)
             hidden_dim (int): hidden dimension
             num_layers (int): number of layers
             n_out (int, optional): number of output dimensions
-            act_func (str, optional): activation function
             act_func (str, optional): _description_. Defaults to "tanh".
             softplus (bool, optional): _description_. Defaults to False.
             resid (bool, optional): _description_. Defaults to False.

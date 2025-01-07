@@ -31,17 +31,18 @@ class rVAE(BaseVAE):
         hidden_dim: int = 512,
         num_layers: int = 1,
         translation: bool = False,
+        dx_prior: float = 1.0,
         theta_prior: float = 1.0,
         optim: str = "Adam",
         epoch: int = 100,
         init_lr: float = 1e-3,
-        dx_prior: float = 1.0,
         activation: str = "tanh",
         device: str = "cpu",
     ):
         super(rVAE, self).__init__()
 
         self.in_dim = in_dim
+        self.z_dim = z_dim
 
         inf_dim = z_dim + 1  ## rotation
         if translation:  ## translation
@@ -89,12 +90,12 @@ class rVAE(BaseVAE):
     def decode(self, x_coord: Tensor, z: Tensor) -> Tensor:
         return self.decoder(x_coord, z)  ## (batch, n*m)
 
-    def sample(
-        self, num_samples: int, current_device: int, **kwargs
-    ) -> Tensor:  ## NOTE: adjust output shape
+    def sample(self, num_samples: int, current_device: int, **kwargs) -> Tensor:
         z = torch.randn(num_samples, self.z_dim).to(self.device)
         coord = self.img2coord().to(self.device)
-        samples = self.decode(coord, z)  ## (num_samples, n*m)
+        coord = coord.expand(num_samples, -1, -1)
+        samples = self.decode(coord.contiguous(), z)  ## (num_samples, n*m)
+        return samples
 
     def reparameterize(self, mu: Tensor, logstd: Tensor) -> Tensor:
         return torch.randn_like(logstd) * torch.exp(logstd) + mu
@@ -133,12 +134,7 @@ class rVAE(BaseVAE):
 
         ## Calculate the rotation KL divergence term
         sigma = torch.tensor(self.theta_prior).to(self.device)
-        kl_div = (
-            -theta_logstd
-            + torch.log(sigma)
-            + (theta_std**2 + theta_mu**2) / 2 / sigma**2
-            - 0.5
-        )
+        kl_div = -theta_logstd + torch.log(sigma) + (theta_std**2) / 2 / sigma**2 - 0.5
 
         if self.translation:
             # dx_mu = z_mu[:, :2]
@@ -154,7 +150,10 @@ class rVAE(BaseVAE):
         y_hat = y_hat.view(b, -1)
 
         size = y.size(1)
-        log_p_x_g_z = -F.binary_cross_entropy_with_logits(y_hat, y) * size
+        # log_p_x_g_z = -F.binary_cross_entropy_with_logits(y_hat, y) * size
+        log_p_x_g_z = -(
+            0.5 * torch.sum((y_hat - y) ** 2, 1)
+        ).mean()  ## likelihood, not recon_loss
 
         z_kl = -z_logstd + 0.5 * z_std**2 + 0.5 * z_mu**2 - 0.5
         kl_div = kl_div + torch.sum(z_kl, 1)
@@ -185,11 +184,8 @@ class rVAE(BaseVAE):
     def manifold2d(self, **kwargs: Union[int, List, str, bool]) -> None:
         d = kwargs.get("d", 9)
         cmap = kwargs.get("cmap", "gnuplot")
-        in_dim = self.in_dim
-        if len(in_dim) == 2:
-            figure = np.zeros((in_dim[0] * d, in_dim[1] * d))
-        elif len(in_dim) == 3:
-            figure = np.zeros((self.in_dim[0] * d, self.in_dim[1] * d, self.in_dim[-1]))
+        in_dim = (int(math.sqrt(self.in_dim)), int(math.sqrt(self.in_dim)))
+        figure = np.zeros((in_dim[0] * d, in_dim[1] * d))
 
         grid_x = norm.ppf(np.linspace(0.95, 0.05, d))
         grid_y = norm.ppf(np.linspace(0.05, 0.95, d))
@@ -198,10 +194,10 @@ class rVAE(BaseVAE):
             for j, yi in enumerate(grid_y):
                 z_sample = np.array([xi, yi])
                 # print(f"z_sample shape: {z_sample.shape}")
-                x_coord = self.x_coord.expand(1, *self.x_coord.size())
+                x_coord = self.img2coord()
                 # with torch.no_grad():
                 imdec = self.decode(
-                    x_coord,
+                    x_coord.contiguous(),
                     torch.tensor(z_sample.astype(np.float32)).unsqueeze(0),
                 )
                 figure[
@@ -237,6 +233,7 @@ class rVAE(BaseVAE):
             + ax.get_yticklabels()
         ):
             item.set_fontsize(18)
+
         if not kwargs.get("savefig"):
             plt.show()
         else:

@@ -26,9 +26,10 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 
 from rVAE import rVAE
-from torch.optim import Adam
 from utils import imlocal, seed_everything, get_device, setup_logger
 
+def load_MNIST(data_path):
+    pass
 
 def load_dynamic_transition_data(
     data_path: str,
@@ -55,7 +56,6 @@ def train_epoch(
     kl_loss_accum = 0
     elbo_accum = 0
     for _, data in enumerate(train_loader):
-        rvae.optG.zero_grad()
         data = data[0].to(rvae.device)
         elbo, log_p_x_g_z, kl_div = rvae(data)
         loss = -elbo
@@ -77,7 +77,7 @@ def train_epoch(
         delta = b * (kl_loss - kl_loss_accum)
         kl_loss_accum += delta / c
 
-        template = "# [{}/{}] training {:.1%}, ELBO={:.5f}, Error={:.5f}, KL={:.5f}"
+        template = "# [{}/{}] training {:.1%}, ELBO={:.5f}, Recon_Loss={:.5f}, KL={:.5f}"
         line = template.format(
             current_epoch + 1,
             rvae.epoch,
@@ -155,7 +155,7 @@ def main():
         imgstack,
         test_size=0.15,
         shuffle=True,
-        random_state=42,
+        random_state=config["train"]["seed"],
     )
 
     train_dataset, val_dataset = TensorDataset(
@@ -188,16 +188,18 @@ def main():
 
     ## Model
     rvae = rVAE(
-        in_dim=train_dataset[0][0].size(0),
+        in_dim=config["model"]["in_dim"],
         z_dim=config["model"]["z_dim"],
         hidden_dim=config["model"]["hidden_dim"],
         num_layers=config["model"]["num_layers"],
-        init_lr=config["train"]["learning_rate"],
         translation=config["prior"][
             "translation"
         ],  ## this requires explicitly set to be true
-        theta_prior=config["prior"]["theta_prior"],
         dx_prior=config["prior"]["dx_prior"],
+        theta_prior=config["prior"]["theta_prior"],
+        optim=config["train"]["optim_type"],
+        epoch=config["train"]["epochs"],
+        init_lr=config["train"]["learning_rate"],
         activation=config["model"]["activation"],
         device=get_device(),
     )
@@ -205,6 +207,7 @@ def main():
     logger.info("Model Initialization Finish")
 
     ## train
+    rvae.train()
     for e in range(config["train"]["epochs"]):
         elbo_accum, gen_loss_accum, kl_loss_accum = train_epoch(
             rvae, train_loader, e, logger
@@ -213,13 +216,13 @@ def main():
             wandb.log(
                 {
                     "ELBO": elbo_accum,
-                    "Error": gen_loss_accum,
+                    "Recon_Error": gen_loss_accum,
                     "KL": kl_loss_accum,
                 },
                 step=e + 1,
             )
         if config["data"]["save_freq"] and (e + 1) % config["data"]["save_freq"] == 0:
-            rvae.save_network(e, current_exp_save_path)
+            rvae.save_network(e + 1, current_exp_save_path)
             logger.info("Saving models and training states at epoch {}".format(e + 1))
     rvae.save_network(config["train"]["epochs"], current_exp_save_path)
     logger.info("End of training")
