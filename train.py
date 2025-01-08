@@ -61,12 +61,12 @@ def train_epoch(
     num_samples = 0
 
     for _, data in enumerate(train_loader):
-        rvae.optG.zero_grad()
         data = data[0].to(rvae.device)
         elbo, log_p_x_g_z, kl_div = rvae(data)
         loss = -elbo
         loss.backward()
         rvae.optG.step()
+        rvae.optG.zero_grad()
 
         # 获取当前批次的损失值
         batch_size = data.size(0)
@@ -209,6 +209,8 @@ def main():
     )
     imgstack, imgstack_com, imgstack_frm = s.imgstack, s.imgstack_com, s.imgstack_frames
 
+    # imgstack = (imgstack - imgstack.min()) / np.ptp(imgstack)
+    
     ## DataLoader
     imstack_train, imstack_test = train_test_split(
         imgstack,
@@ -265,7 +267,7 @@ def main():
 
     # 自定义一个衰减函数，按 epoch 衰减
     def lr_lambda(epoch):
-        return 0.95**epoch  # 每个 epoch 衰减 5%
+        return 0.98**epoch  # 每个 epoch 衰减 5%
 
     rvae.get_optim()
     scheduler = torch.optim.lr_scheduler.LambdaLR(rvae.optG, lr_lambda)

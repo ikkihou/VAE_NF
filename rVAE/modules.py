@@ -123,7 +123,7 @@ class SpatialGenerator(nn.Module):  ## p(X | z, \theta, \Delta_X)
         ):  # include bilinear layer on latent and coordinates
             self.bilinear = nn.Bilinear(in_dim, latent_dim, hidden_dim, bias=False)
 
-        layers = [activation()]
+        layers = []
         for _ in range(num_layers):
             if resid:
                 layers.append(

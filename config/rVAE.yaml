@@ -9,13 +9,13 @@ data:
 model:
   in_dim: 576
   z_dim: 2
-  hidden_dim: 128 
-  num_layers: 2 
+  hidden_dim: 128
+  num_layers: 2
   activation: "tanh"
 
 # Prior settings
 prior:
-  translation: true 
+  translation: true
   theta_prior: 0.1
   dx_prior: 0.1
 
@@ -25,11 +25,11 @@ train:
   batch_size: 200
   optim_type: "Adam"
   learning_rate: 1.0e-3
-  seed: 27
+  seed: 4231
 
 # Logging settings
 logging:
-  wandb: true 
+  wandb: true
   logger_name: "VAE_NF"
   log_level: "INFO"
   screen: true

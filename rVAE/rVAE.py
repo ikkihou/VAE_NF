@@ -59,10 +59,10 @@ class rVAE(BaseVAE):
         self.optG = None  # 初始化优化器变量为 None, 训练时必须显式调用
 
         self.encoder = InferenceNetwork(
-            in_dim,
-            inf_dim,
-            hidden_dim,
-            num_layers,
+            n=in_dim,
+            latent_dim=inf_dim,
+            num_layers=num_layers,
+            hidden_dim=hidden_dim,
             act_func=activation,
         ).to(self.device)
 
@@ -149,7 +149,7 @@ class rVAE(BaseVAE):
         y_hat = self.decode(x_coord_.contiguous(), z)
         y_hat = y_hat.view(b, -1)
 
-        size = y.size(1)
+        # size = y.size(1)
         # log_p_x_g_z = -F.binary_cross_entropy_with_logits(y_hat, y) * size
         log_p_x_g_z = -(
             0.5 * torch.sum((y_hat - y) ** 2, 1)
