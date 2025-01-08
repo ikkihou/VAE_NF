@@ -54,6 +54,7 @@ def train_epoch(
     logger: logging.Logger,
 ) -> None:
     # 初始化累积值和计数器
+    rvae.train()
     running_elbo = 0
     running_gen_loss = 0
     running_kl_div = 0
@@ -97,6 +98,49 @@ def train_epoch(
     # logger.info(
     #     f"[{current_epoch + 1}/{rvae.epoch}], ELBO={elbo_accum:.5f}, Error={gen_loss_accum:.5f}, KL={kl_loss_accum:.5f}"
     # )
+
+    return avg_elbo, avg_gen_loss, avg_kl_div
+
+
+def eval_epoch(
+    rvae: torch.nn.Module,
+    val_loader: DataLoader,
+    current_epoch: int,
+    logger: logging.Logger,
+) -> None:
+    rvae.eval()
+    running_elbo = 0
+    running_gen_loss = 0
+    running_kl_div = 0
+    num_samples = 0
+
+    with torch.no_grad():
+        for _, data in enumerate(val_loader):
+            data = data[0].to(rvae.device)
+            elbo, log_p_x_g_z, kl_div = rvae(data)
+            loss = -elbo
+
+        batch_size = data.size(0)
+        num_samples += batch_size
+
+        running_elbo += elbo.item() * batch_size
+        running_gen_loss += (-log_p_x_g_z.item()) * batch_size
+        running_kl_div += kl_div.item() * batch_size
+
+        avg_elbo = running_elbo / num_samples
+        avg_gen_loss = running_gen_loss / num_samples
+        avg_kl_div = running_kl_div / num_samples
+
+        template = "# [{}/{}] eval {:.1%}, ELBO={:.5f}, Recon_Loss={:.5f}, KL={:.5f}"
+        line = template.format(
+            current_epoch + 1,
+            rvae.epoch,
+            num_samples / len(val_loader.dataset),
+            avg_elbo,
+            avg_gen_loss,
+            avg_kl_div,
+        )
+        print(line, end="\r", file=sys.stderr)
 
     return avg_elbo, avg_gen_loss, avg_kl_div
 
@@ -219,16 +263,25 @@ def main():
     logger.info("Model Initialization Finish")
 
     ## train
-    rvae.train()
     for e in range(config["train"]["epochs"]):
         avg_elbo, avg_gen_loss, avg_kl_div = train_epoch(rvae, train_loader, e, logger)
         scheduler.step()
         if config["logging"]["wandb"]:
             wandb.log(
                 {
-                    "ELBO": avg_elbo,
-                    "Recon_Error": avg_gen_loss,
-                    "KL": avg_kl_div,
+                    "train_ELBO": avg_elbo,
+                    "train_Recon_Error": avg_gen_loss,
+                    "train_KL": avg_kl_div,
+                },
+                step=e + 1,
+            )
+        avg_elbo, avg_gen_loss, avg_kl_div = eval_epoch(rvae, val_loader, e, logger)
+        if config["logging"]["wandb"]:
+            wandb.log(
+                {
+                    "eval_ELBO": avg_elbo,
+                    "eval_Recon_Error": avg_gen_loss,
+                    "eval_KL": avg_kl_div,
                 },
                 step=e + 1,
             )
