@@ -52,10 +52,7 @@ class InferenceNetwork(nn.Module):  ## q(z, \theta, \Delta_X | X)
 
         activation = nn.Tanh if act_func == "tanh" else nn.ReLU
 
-        layers = [
-            nn.Linear(n, hidden_dim),
-            activation(),
-        ]
+        layers = [nn.Linear(self.n, hidden_dim), activation()]
         for _ in range(1, num_layers):
             if resid:
                 layers.append(
@@ -65,17 +62,16 @@ class InferenceNetwork(nn.Module):  ## q(z, \theta, \Delta_X | X)
                 layers.append(nn.Linear(hidden_dim, hidden_dim))
                 layers.append(activation())
 
-        layers.append(nn.Linear(hidden_dim, 2 * latent_dim))
-
         self.layers = nn.Sequential(*layers)
+        self.fc1 = nn.Linear(hidden_dim, latent_dim)
+        self.fc2 = nn.Linear(hidden_dim, latent_dim)
 
     def forward(self, x):
         # x is (batch,num_coords)
-        z = self.layers(x)  ## NOTE: (batch, 2*latent_dim)
+        z = self.layers(x)  ## NOTE: (batch, latent_dim)
 
-        ld = self.latent_dim
-        z_mu = z[:, :ld]
-        z_logstd = z[:, ld:]
+        z_mu = self.fc1(z)
+        z_logstd = self.fc2(z)
 
         return z_mu, z_logstd
 
@@ -128,7 +124,7 @@ class SpatialGenerator(nn.Module):  ## p(X | z, \theta, \Delta_X)
             self.bilinear = nn.Bilinear(in_dim, latent_dim, hidden_dim, bias=False)
 
         layers = [activation()]
-        for _ in range(1, num_layers):
+        for _ in range(num_layers):
             if resid:
                 layers.append(
                     ResidLinear(hidden_dim, hidden_dim, activation=activation)

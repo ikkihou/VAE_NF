@@ -204,7 +204,7 @@ class rVAE(BaseVAE):
                     i * in_dim[0] : (i + 1) * in_dim[0],
                     j * in_dim[1] : (j + 1) * in_dim[1],
                 ] = (
-                    imdec.detach().cpu().numpy()[0, 0]
+                    imdec.detach().cpu().numpy().reshape(in_dim[0], in_dim[0])
                 )
         if figure.min() < 0:
             figure = (figure - figure.min()) / figure.ptp()
