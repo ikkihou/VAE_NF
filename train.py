@@ -56,7 +56,7 @@ def train_epoch(
     # 初始化累积值和计数器
     running_elbo = 0
     running_gen_loss = 0
-    running_kl_loss = 0
+    running_kl_div = 0
     num_samples = 0
 
     for _, data in enumerate(train_loader):
@@ -74,12 +74,12 @@ def train_epoch(
         # 直接累加损失值
         running_elbo += elbo.item() * batch_size
         running_gen_loss += (-log_p_x_g_z.item()) * batch_size
-        running_kl_loss += kl_div.item() * batch_size
+        running_kl_div += kl_div.item() * batch_size
 
         # 计算平均损失
         avg_elbo = running_elbo / num_samples
         avg_gen_loss = running_gen_loss / num_samples
-        avg_kl_loss = running_kl_loss / num_samples
+        avg_kl_div = running_kl_div / num_samples
 
         template = (
             "# [{}/{}] training {:.1%}, ELBO={:.5f}, Recon_Loss={:.5f}, KL={:.5f}"
@@ -90,7 +90,7 @@ def train_epoch(
             num_samples / len(train_loader.dataset),
             avg_elbo,
             avg_gen_loss,
-            avg_kl_loss,
+            avg_kl_div,
         )
         print(line, end="\r", file=sys.stderr)
 
@@ -98,7 +98,7 @@ def train_epoch(
     #     f"[{current_epoch + 1}/{rvae.epoch}], ELBO={elbo_accum:.5f}, Error={gen_loss_accum:.5f}, KL={kl_loss_accum:.5f}"
     # )
 
-    return elbo_accum, gen_loss_accum, kl_loss_accum
+    return avg_elbo, avg_gen_loss, avg_kl_div
 
 
 def load_config(config_path):
@@ -221,16 +221,14 @@ def main():
     ## train
     rvae.train()
     for e in range(config["train"]["epochs"]):
-        elbo_accum, gen_loss_accum, kl_loss_accum = train_epoch(
-            rvae, train_loader, e, logger
-        )
+        avg_elbo, avg_gen_loss, avg_kl_div = train_epoch(rvae, train_loader, e, logger)
         scheduler.step()
         if config["logging"]["wandb"]:
             wandb.log(
                 {
-                    "ELBO": elbo_accum,
-                    "Recon_Error": gen_loss_accum,
-                    "KL": kl_loss_accum,
+                    "ELBO": avg_elbo,
+                    "Recon_Error": avg_gen_loss,
+                    "KL": avg_kl_div,
                 },
                 step=e + 1,
             )
