@@ -77,28 +77,28 @@ def train_epoch(
         running_gen_loss += (-log_p_x_g_z.item()) * batch_size
         running_kl_div += kl_div.item() * batch_size
 
-        # 计算平均损失
+        # Calculate running averages
         avg_elbo = running_elbo / num_samples
         avg_gen_loss = running_gen_loss / num_samples
         avg_kl_div = running_kl_div / num_samples
 
-        template = (
-            "# [{}/{}] training {:.1%}, ELBO={:.5f}, Recon_Loss={:.5f}, KL={:.5f}"
+        # Print on same line with \r
+        template = "\rTrain: [{}/{}] {:.1%}, ELBO={:.5f}, Recon_Loss={:.5f}, KL={:.5f}"
+        print(
+            template.format(
+                current_epoch + 1,
+                rvae.epoch,
+                num_samples / len(train_loader.dataset),
+                avg_elbo,
+                avg_gen_loss,
+                avg_kl_div,
+            ),
+            end="",
+            file=sys.stderr,
         )
-        line = template.format(
-            current_epoch + 1,
-            rvae.epoch,
-            num_samples / len(train_loader.dataset),
-            avg_elbo,
-            avg_gen_loss,
-            avg_kl_div,
-        )
-        print(line, end="\r", file=sys.stderr)
 
-    # logger.info(
-    #     f"[{current_epoch + 1}/{rvae.epoch}], ELBO={elbo_accum:.5f}, Error={gen_loss_accum:.5f}, KL={kl_loss_accum:.5f}"
-    # )
-
+    # Add newline only at the end of epoch
+    print(file=sys.stderr)
     return avg_elbo, avg_gen_loss, avg_kl_div
 
 
@@ -120,28 +120,37 @@ def eval_epoch(
             elbo, log_p_x_g_z, kl_div = rvae(data)
             loss = -elbo
 
-        batch_size = data.size(0)
-        num_samples += batch_size
+            batch_size = data.size(0)
+            num_samples += batch_size
 
-        running_elbo += elbo.item() * batch_size
-        running_gen_loss += (-log_p_x_g_z.item()) * batch_size
-        running_kl_div += kl_div.item() * batch_size
+            running_elbo += elbo.item() * batch_size
+            running_gen_loss += (-log_p_x_g_z.item()) * batch_size
+            running_kl_div += kl_div.item() * batch_size
 
-        avg_elbo = running_elbo / num_samples
-        avg_gen_loss = running_gen_loss / num_samples
-        avg_kl_div = running_kl_div / num_samples
+            # Calculate running averages
+            avg_elbo = running_elbo / num_samples
+            avg_gen_loss = running_gen_loss / num_samples
+            avg_kl_div = running_kl_div / num_samples
 
-        template = "# [{}/{}] eval {:.1%}, ELBO={:.5f}, Recon_Loss={:.5f}, KL={:.5f}"
-        line = template.format(
-            current_epoch + 1,
-            rvae.epoch,
-            num_samples / len(val_loader.dataset),
-            avg_elbo,
-            avg_gen_loss,
-            avg_kl_div,
-        )
-        print(line, end="\r", file=sys.stderr)
+            # Print on same line with \r
+            template = (
+                "\rEval:  [{}/{}] {:.1%}, ELBO={:.5f}, Recon_Loss={:.5f}, KL={:.5f}"
+            )
+            print(
+                template.format(
+                    current_epoch + 1,
+                    rvae.epoch,
+                    num_samples / len(val_loader.dataset),
+                    avg_elbo,
+                    avg_gen_loss,
+                    avg_kl_div,
+                ),
+                end="",
+                file=sys.stderr,
+            )
 
+    # Add newline only at the end of epoch
+    print(file=sys.stderr)
     return avg_elbo, avg_gen_loss, avg_kl_div
 
 
