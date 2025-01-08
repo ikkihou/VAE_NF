@@ -28,8 +28,10 @@ from sklearn.model_selection import train_test_split
 from rVAE import rVAE
 from utils import imlocal, seed_everything, get_device, setup_logger
 
+
 def load_MNIST(data_path):
     pass
+
 
 def load_dynamic_transition_data(
     data_path: str,
@@ -51,10 +53,12 @@ def train_epoch(
     current_epoch: int,
     logger: logging.Logger,
 ) -> None:
-    c = 0
-    gen_loss_accum = 0
-    kl_loss_accum = 0
-    elbo_accum = 0
+    # 初始化累积值和计数器
+    running_elbo = 0
+    running_gen_loss = 0
+    running_kl_loss = 0
+    num_samples = 0
+
     for _, data in enumerate(train_loader):
         rvae.optG.zero_grad()
         data = data[0].to(rvae.device)
@@ -63,29 +67,30 @@ def train_epoch(
         loss.backward()
         rvae.optG.step()
 
-        elbo = elbo.item()
-        gen_loss = -log_p_x_g_z.item()
-        kl_loss = kl_div.item()
+        # 获取当前批次的损失值
+        batch_size = data.size(0)
+        num_samples += batch_size
 
-        b = data.size(0)
-        c += b
-        delta = b * (gen_loss - gen_loss_accum)
-        gen_loss_accum += delta / c
+        # 直接累加损失值
+        running_elbo += elbo.item() * batch_size
+        running_gen_loss += (-log_p_x_g_z.item()) * batch_size
+        running_kl_loss += kl_div.item() * batch_size
 
-        delta = b * (elbo - elbo_accum)
-        elbo_accum += delta / c
+        # 计算平均损失
+        avg_elbo = running_elbo / num_samples
+        avg_gen_loss = running_gen_loss / num_samples
+        avg_kl_loss = running_kl_loss / num_samples
 
-        delta = b * (kl_loss - kl_loss_accum)
-        kl_loss_accum += delta / c
-
-        template = "# [{}/{}] training {:.1%}, ELBO={:.5f}, Recon_Loss={:.5f}, KL={:.5f}"
+        template = (
+            "# [{}/{}] training {:.1%}, ELBO={:.5f}, Recon_Loss={:.5f}, KL={:.5f}"
+        )
         line = template.format(
             current_epoch + 1,
             rvae.epoch,
-            c / len(train_loader.dataset),
-            elbo_accum,
-            gen_loss_accum,
-            kl_loss_accum,
+            num_samples / len(train_loader.dataset),
+            avg_elbo,
+            avg_gen_loss,
+            avg_kl_loss,
         )
         print(line, end="\r", file=sys.stderr)
 
@@ -204,9 +209,10 @@ def main():
         activation=config["model"]["activation"],
         device=get_device(),
     )
+
     # 自定义一个衰减函数，按 epoch 衰减
     def lr_lambda(epoch):
-        return 0.95 ** epoch  # 每个 epoch 衰减 5%
+        return 0.95**epoch  # 每个 epoch 衰减 5%
 
     rvae.get_optim()
     scheduler = torch.optim.lr_scheduler.LambdaLR(rvae.optG, lr_lambda)
