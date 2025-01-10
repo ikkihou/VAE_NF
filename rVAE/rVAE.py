@@ -37,8 +37,24 @@ class rVAE(BaseVAE):
         epoch: int = 100,
         init_lr: float = 1e-3,
         activation: str = "tanh",
+        loss_type: str = "bce_logits",  ## "mse" or "bce_logits"
         device: str = "cpu",
     ):
+        """rVAE model
+        Args:
+            in_dim (int, optional): input image dimension. Defaults to 576.
+            hidden_dim (int, optional): hidden dimension. Defaults to 512.
+            num_layers (int, optional): number of layers. Defaults to 1.
+            translation (bool, optional): whether to use translation. Defaults to False.
+            dx_prior (float, optional): translation prior. Defaults to 1.0.
+            theta_prior (float, optional): rotation prior. Defaults to 1.0.
+            optim (str, optional): optimizer. Defaults to "Adam". options: "Adam", "SGD"
+            epoch (int, optional): number of epochs. Defaults to 100.
+            init_lr (float, optional): learning rate. Defaults to 1e-3.
+            activation (str, optional): activation function. Defaults to "tanh". options: "tanh", "relu"
+            loss_type (str, optional): loss type. Defaults to "bce_logits". options: "mse", "bce_logits".
+            device (str, optional): device. Defaults to "cpu". options: "cpu", "mps", "cuda".
+        """
         super(rVAE, self).__init__()
 
         self.in_dim = in_dim
@@ -55,6 +71,7 @@ class rVAE(BaseVAE):
         self.optim_type = optim
         self.init_lr = init_lr
         self.epoch = epoch
+        self.loss_type = loss_type
         self.device = device
         self.optG = None  # 初始化优化器变量为 None, 训练时必须显式调用
 
@@ -149,11 +166,15 @@ class rVAE(BaseVAE):
         y_hat = self.decode(x_coord_.contiguous(), z)
         y_hat = y_hat.view(b, -1)
 
-        # size = y.size(1)
-        # log_p_x_g_z = -F.binary_cross_entropy_with_logits(y_hat, y) * size
-        log_p_x_g_z = -(
-            0.5 * torch.sum((y_hat - y) ** 2, 1)
-        ).mean()  ## likelihood, not recon_loss
+        if self.loss_type == "bce_logits":
+            size = y.size(1)
+            log_p_x_g_z = -F.binary_cross_entropy_with_logits(y_hat, y) * size
+        elif self.loss_type == "mse":
+            log_p_x_g_z = -(
+                0.5 * torch.sum((y_hat - y) ** 2, 1)
+            ).mean()  ## likelihood, not recon_loss
+        else:
+            raise ValueError(f"Loss type {self.loss_type} not supported")
 
         z_kl = -z_logstd + 0.5 * z_std**2 + 0.5 * z_mu**2 - 0.5
         kl_div = kl_div + torch.sum(z_kl, 1)
@@ -193,9 +214,7 @@ class rVAE(BaseVAE):
         for i, xi in enumerate(grid_x):
             for j, yi in enumerate(grid_y):
                 z_sample = np.array([xi, yi])
-                # print(f"z_sample shape: {z_sample.shape}")
                 x_coord = self.img2coord()
-                # with torch.no_grad():
                 imdec = self.decode(
                     x_coord.contiguous(),
                     torch.tensor(z_sample.astype(np.float32)).unsqueeze(0),

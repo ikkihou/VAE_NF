@@ -262,6 +262,7 @@ def main():
         epoch=config["train"]["epochs"],
         init_lr=config["train"]["learning_rate"],
         activation=config["model"]["activation"],
+        loss_type=config["train"]["loss_type"],
         device=get_device(),
     )
 

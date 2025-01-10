@@ -24,6 +24,7 @@ train:
   epochs: 200
   batch_size: 200
   optim_type: "Adam"
+  loss_type: "mse"
   learning_rate: 1.0e-3
   seed: 4231
 

@@ -179,3 +179,53 @@ class SpatialGenerator(nn.Module):  ## p(X | z, \theta, \Delta_X)
             y = torch.cat([F.softplus(y[:, :, :1]), y[:, :, 1:]], 2)
 
         return y
+
+
+class VanillaGenerator(nn.Module):
+    def __init__(
+        self,
+        n,
+        latent_dim,
+        hidden_dim,
+        n_out=1,
+        num_layers=1,
+        act_func: str = "tanh",
+        softplus=False,
+        resid=False,
+    ):
+        super(VanillaGenerator, self).__init__()
+        """
+        The standard MLP structure for image generation. Decodes each pixel location as a funciton of z.
+        """
+
+        self.n_out = n_out
+        self.softplus = softplus
+
+        activation = nn.Tanh if act_func == "tanh" else nn.ReLU
+
+        layers = [nn.Linear(latent_dim, hidden_dim), activation()]
+        for _ in range(1, num_layers):
+            if resid:
+                layers.append(
+                    ResidLinear(hidden_dim, hidden_dim, activation=activation)
+                )
+            else:
+                layers.append(nn.Linear(hidden_dim, hidden_dim))
+                layers.append(activation())
+        layers.append(nn.Linear(hidden_dim, n * n_out))
+        if softplus:
+            layers.append(nn.Softplus())
+
+        self.layers = nn.Sequential(*layers)
+
+    def forward(self, x, z):
+        # x is (batch, num_coords, 2)
+        # z is (batch, latent_dim)
+
+        # ignores x, decodes each pixel conditioned on z
+
+        y = self.layers(z).view(z.size(0), -1, self.n_out)
+        if self.softplus:  # only apply softplus to first output
+            y = torch.cat([F.softplus(y[:, :, :1]), y[:, :, 1:]], 2)
+
+        return y
