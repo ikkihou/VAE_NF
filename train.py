@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 
 from rVAE import rVAE
-from utils import imlocal, seed_everything, get_device, setup_logger
+from utils.utils import imlocal, seed_everything, get_device, setup_logger
 
 
 def load_MNIST(data_path):
