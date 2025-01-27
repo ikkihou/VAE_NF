@@ -210,7 +210,7 @@ def main():
     imgstack, imgstack_com, imgstack_frm = s.imgstack, s.imgstack_com, s.imgstack_frames
 
     # imgstack = (imgstack - imgstack.min()) / np.ptp(imgstack)
-    
+
     ## DataLoader
     imstack_train, imstack_test = train_test_split(
         imgstack,

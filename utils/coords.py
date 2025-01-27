@@ -41,8 +41,6 @@ def imcoordgrid(in_dim: Union[int, Tuple]) -> torch.Tensor:
     return grid2xy(x0, x1)
 
 
-
-
 def transform_coordinates(
     coord: torch.Tensor,
     phi: float,

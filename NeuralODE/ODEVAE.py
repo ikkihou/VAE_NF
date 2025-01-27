@@ -9,11 +9,9 @@
 """
 
 # here put the import lib
-import math
 import torch
 import torch.nn as nn
 from torch import Tensor
-import torch.nn.functional as F
 from torchdiffeq import odeint
 
 from utils.coords import imcoordgrid
@@ -157,7 +155,7 @@ class NeuralODEDecoder(nn.Module):
         zs = self.ode(z0, t)  ## (n_timestamps, batch_size, latent)
 
         if self.coord > 0:
-            dx = self.calc_dx(zs, self.dx_prior)
+            dx = self.calc_dx(zs, self.dx_prior.to(zs))
             coord = self.transform_coordinate(zs, dx)
 
             xs = self.decode_net(coord, zs[:, :, 3:])
@@ -179,7 +177,7 @@ class NeuralODEDecoder(nn.Module):
         return grid_stack
 
     def transform_coordinate(self, zs, dx):
-        grid_stack = self._make_grid_stack(zs)
+        grid_stack = self._make_grid_stack(zs).to(zs)
         b = grid_stack.size(0)
         n = grid_stack.size(1)
 
@@ -228,6 +226,7 @@ class ODEVAE(nn.Module):
         )
 
         self.device = device
+        self.to(device)
 
     def forward(self, x, t, MAP=False):
         z_mean, z_log_var = self.encoder(x, t)  ## (batch_size, latent_dim+3)
