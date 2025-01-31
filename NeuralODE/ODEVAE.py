@@ -48,7 +48,7 @@ class NNODEF(nn.Module):
 
     def forward(self, t, x):
         if not self.time_invariant:
-            x = torch.cat((x, t), dim=-1)
+            x = torch.cat((x, t.reshape(1, 1)), dim=-1)
 
         h = self.elu(self.lin1(x))
         h = self.elu(self.lin2(h))
@@ -146,7 +146,7 @@ class NeuralODEDecoder(nn.Module):
 
         self.dx_prior = Tensor(kwargs.get("dx_prior", [1.0]))
 
-        func = NNODEF(latent_dim + coord, hidden_dim, time_invariant=True)
+        func = NNODEF(latent_dim + coord, hidden_dim, time_invariant=False)
         self.ode = NeuralODE(func)
 
         self.decode_net = (
@@ -216,7 +216,7 @@ class ODEVAE(nn.Module):
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.coord = coord
-        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 0.1)).to(device)
+        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 1.0)).to(device)
 
         self.encoder = RNNEncoder(
             self.input_dim,
