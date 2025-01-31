@@ -16,6 +16,13 @@ from torchdiffeq import odeint
 
 from utils.coords import imcoordgrid
 
+import math
+import numpy as np
+from scipy.stats import norm
+import matplotlib.pyplot as plt
+
+from typing import Union, List
+
 
 class NeuralODE(nn.Module):
     def __init__(self, func, *args, **kwargs):
@@ -162,7 +169,7 @@ class NeuralODEDecoder(nn.Module):
         else:
             xs = self.decode_net(zs)
 
-        return xs
+        return xs, zs
 
     def calc_dx(self, zs, dx_prior):
         z_dx = zs[:, :, 1:3]
@@ -170,28 +177,28 @@ class NeuralODEDecoder(nn.Module):
         return dx
 
     def _make_grid_stack(self, zs):
-        b = zs.size(0)
-        n = zs.size(1)
+        sq_len = zs.size(0)
+        b = zs.size(1)
         single_grid = imcoordgrid(self.input_dim)
-        grid_stack = single_grid.view(1, 1, self.input_dim, 2).repeat(b, n, 1, 1)
+        grid_stack = single_grid.view(1, 1, self.input_dim, 2).repeat(sq_len, b, 1, 1)
         return grid_stack
 
     def transform_coordinate(self, zs, dx):
         grid_stack = self._make_grid_stack(zs).to(zs)
-        b = grid_stack.size(0)
-        n = grid_stack.size(1)
+        sq_len = grid_stack.size(0)
+        b = grid_stack.size(1)
 
         theta = zs[:, :, 0]
         rotmat_r1 = torch.stack([torch.cos(theta), torch.sin(theta)], dim=-1)
-        rotmat_r2 = torch.stack([torch.cos(theta), torch.sin(theta)], dim=-1)
+        rotmat_r2 = torch.stack([-torch.sin(theta), torch.cos(theta)], dim=-1)
         rotmat = torch.stack([rotmat_r1, rotmat_r2], dim=-1)
 
         grid_stack_reshaped = grid_stack.view(-1, self.input_dim, 2)
         rotmat_reshaped = rotmat.view(-1, 2, 2)
 
         coord_stack_reshape = torch.bmm(grid_stack_reshaped, rotmat_reshaped)
-        coord_stack = coord_stack_reshape.view(b, n, self.input_dim, 2)
-        return coord_stack + dx.unsqueeze(2)  ## (b, n, input_dim, 2)
+        coord_stack = coord_stack_reshape.view(sq_len, b, self.input_dim, 2)
+        return coord_stack + dx.unsqueeze(2)  ## (sq_len, b, input_dim, 2)
 
 
 class ODEVAE(nn.Module):
@@ -201,7 +208,7 @@ class ODEVAE(nn.Module):
         hidden_dim: int = 64,
         latent_dim: int = 2,
         coord: int = 3,
-        device: torch.divide = torch.device("cpu"),
+        device: torch.device = torch.device("cpu"),
         **kwargs,
     ):
         super(ODEVAE, self).__init__()
@@ -209,7 +216,7 @@ class ODEVAE(nn.Module):
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.coord = coord
-        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 1.0)).to(device)
+        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 0.1)).to(device)
 
         self.encoder = RNNEncoder(
             self.input_dim,
@@ -256,7 +263,7 @@ class ODEVAE(nn.Module):
         kl_div = kl_div_rot + torch.sum(z_div_kl, 1)
         kl_div = kl_div.mean()
 
-        x_p = self.decoder(z, t[:, 0].view(-1))
+        x_p, zs = self.decoder(z, t[:, 0].view(-1))
 
         log_p_x_g_z = -(
             0.5
@@ -267,10 +274,23 @@ class ODEVAE(nn.Module):
 
         elbo = log_p_x_g_z - kl_div
 
-        return x_p, elbo, log_p_x_g_z, kl_div
+        return x_p, elbo, log_p_x_g_z, kl_div, zs
 
     def _loss_func(self):
         pass
+
+    def manifold2d(self, **kwargs: Union[int, List, str, bool]):
+        d = kwargs.get("d", 9)
+        cmap = kwargs.get("cmap", "gnuplot")
+        in_dim = (int(math.sqrt(self.in_dim)), int(math.sqrt(self.in_dim)))
+        figure = np.zeros((in_dim[0] * d, in_dim[1] * d))
+
+        grid_x = norm.ppf(np.linspace(0.95, 0.05, d))
+        grid_y = norm.ppf(np.linspace(0.05, 0.95, d))
+
+        for i, xi in enumerate(grid_x):
+            for j, yj in enumerate(grid_y):
+                z_sample = np.array([xi, yj])
 
     def generate_with_seed(self, seed_x, t):
         seed_t_len = seed_x.shape[0]
