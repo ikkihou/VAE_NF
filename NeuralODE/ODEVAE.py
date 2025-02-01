@@ -24,13 +24,34 @@ import matplotlib.pyplot as plt
 from typing import Union, List
 
 
+def activation_func(act: str = "tanh"):
+    if act == "tanh":
+        return nn.Tanh()
+    elif act == "relu":
+        return nn.ReLU()
+    elif act == "elu":
+        return nn.ELU()
+    elif act == "swish":
+        return nn.SiLU()
+    elif act == "sigmoid":
+        return nn.Sigmoid()
+    else:
+        raise ValueError(f"Activation function {act} not supported")
+
+
 class NeuralODE(nn.Module):
     def __init__(self, func, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.odefunc = func
 
     def forward(self, y0, t):
-        return odeint(self.odefunc, y0, t, options={"dtype": torch.float32})
+        return odeint(
+            self.odefunc,
+            y0,
+            t,
+            method="rk4",
+            options={"step_size": 0.01, "dtype": torch.float32},
+        )
 
 
 class NNODEF(nn.Module):
@@ -44,27 +65,36 @@ class NNODEF(nn.Module):
             self.lin1 = nn.Linear(in_dim + 1, hid_dim)
         self.lin2 = nn.Linear(hid_dim, hid_dim)
         self.lin3 = nn.Linear(hid_dim, in_dim)
-        self.elu = nn.ELU(inplace=True)
+        self.relu = nn.ReLU(inplace=True)
 
     def forward(self, t, x):
         if not self.time_invariant:
             x = torch.cat((x, t.reshape(1, 1)), dim=-1)
 
-        h = self.elu(self.lin1(x))
-        h = self.elu(self.lin2(h))
+        h = self.relu(self.lin1(x))
+        h = self.relu(self.lin2(h))
         out = self.lin3(h)
         return out
 
 
 class RNNEncoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim, latent_dim):
+    def __init__(self, input_dim, hidden_dim, latent_dim, act: str = "tanh"):
         super(RNNEncoder, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
+        self.act = activation_func(act)
 
-        self.rnn = nn.GRU(self.input_dim + 1, self.hidden_dim)
-        self.hid2lat = nn.Linear(self.hidden_dim, 2 * self.latent_dim)
+        self.rnn = nn.GRU(self.input_dim + 1, self.hidden_dim, num_layers=2)
+        self.layers = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            self.act,
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            self.act,
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            self.act,
+            nn.Linear(self.hidden_dim, 2 * self.latent_dim),
+        )
 
     def forward(self, x, t):
         # Concatenate time to input
@@ -75,10 +105,46 @@ class RNNEncoder(nn.Module):
 
         _, h0 = self.rnn(xt.flip((0,)))  # Reversed
         # Compute latent dimension
-        z0 = self.hid2lat(h0[0])
+        z0 = self.layers(h0[0])
         z0_mean = z0[:, : self.latent_dim]
         z0_log_var = z0[:, self.latent_dim :]
         return z0_mean, z0_log_var  ## both (n_timestamps, n_samples, latent_dim)
+
+
+class LSTMEncoder(nn.Module):
+    def __init__(self, input_dim, hidden_dim, latent_dim, act: str = "tanh"):
+        super(LSTMEncoder, self).__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.latent_dim = latent_dim
+        self.act = activation_func(act)
+
+        # 将 GRU 替换为 LSTM
+        self.rnn = nn.LSTM(self.input_dim + 1, self.hidden_dim, num_layers=1)
+
+        self.layers = nn.Sequential(
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            self.act,
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            self.act,
+            nn.Linear(self.hidden_dim, self.hidden_dim),
+            self.act,
+            nn.Linear(self.hidden_dim, 2 * self.latent_dim),
+        )
+
+    def forward(self, x, t):
+        # 计算时间间隔
+        t = t.clone()
+        t[1:] = t[:-1] - t[1:]
+        t[0] = 0.0
+        xt = torch.cat((x, t), dim=-1)  # 拼接时间信息
+
+        _, (h_n, c_n) = self.rnn(xt.flip((0,)))  # LSTM 额外返回 c_n，但我们不使用它
+        z0 = self.layers(h_n[0])  # 仅使用 h_n
+
+        z0_mean = z0[:, : self.latent_dim]
+        z0_log_var = z0[:, self.latent_dim :]
+        return z0_mean, z0_log_var  # 输出形状 (n_timestamps, n_samples, latent_dim)
 
 
 class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
@@ -90,11 +156,19 @@ class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
         act: bool = False,
     ):
         super(CoordBoost, self).__init__()
-        self.fc_coord = nn.Linear(2, hidden_dim)  ## for coord matrix
-        self.fc_latent = nn.Linear(
-            latent_dim, hidden_dim, bias=False
-        )  ## for image content
-        self.activation = nn.Tanh() if act else None
+        # self.fc_coord = nn.Linear(2, hidden_dim)  ## for coord matrix
+        # self.fc_latent = nn.Linear(
+        #     latent_dim, hidden_dim, bias=False
+        # )  ## for image content
+        # self.activation = nn.Tanh() if act else None
+
+        self.fc_coord = nn.Sequential(
+            nn.Linear(2, hidden_dim), nn.BatchNorm1d(hidden_dim)
+        )
+        self.fc_latent = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim, bias=False), nn.BatchNorm1d(hidden_dim)
+        )
+        self.activation = nn.Tanh()  # 或者尝试 Swish
 
         layers = []
         for _ in range(3):
@@ -135,6 +209,7 @@ class NeuralODEDecoder(nn.Module):
         hidden_dim,
         latent_dim,
         coord,
+        act: str = "tanh",
         **kwargs,
     ):
         super(NeuralODEDecoder, self).__init__()
@@ -143,6 +218,7 @@ class NeuralODEDecoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.coord = coord
+        self.act = activation_func(act)
 
         self.dx_prior = Tensor(kwargs.get("dx_prior", [1.0]))
 
@@ -154,7 +230,13 @@ class NeuralODEDecoder(nn.Module):
             if coord > 0
             else nn.Sequential(
                 nn.Linear(latent_dim, hidden_dim),
+                self.act,
+                nn.Linear(hidden_dim, hidden_dim),
+                self.act,
+                nn.Linear(hidden_dim, hidden_dim),
+                self.act,
                 nn.Linear(hidden_dim, self.output_dim),
+                nn.Sigmoid(),
             )
         )
 
@@ -208,6 +290,7 @@ class ODEVAE(nn.Module):
         hidden_dim: int = 64,
         latent_dim: int = 2,
         coord: int = 3,
+        act: str = "tanh",
         device: torch.device = torch.device("cpu"),
         **kwargs,
     ):
@@ -216,12 +299,14 @@ class ODEVAE(nn.Module):
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.coord = coord
-        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 1.0)).to(device)
+        self.act = activation_func(act)
+        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 0.1)).to(device)
 
-        self.encoder = RNNEncoder(
+        self.encoder = LSTMEncoder(
             self.input_dim,
             self.hidden_dim,
             self.latent_dim + coord,
+            act="relu",
         )
 
         self.decoder = NeuralODEDecoder(
@@ -229,13 +314,14 @@ class ODEVAE(nn.Module):
             self.hidden_dim,
             self.latent_dim,
             coord,
+            act="relu",
             **kwargs,
         )
 
         self.device = device
         self.to(device)
 
-    def forward(self, x, t, MAP=False):
+    def forward(self, x, t, beta, MAP=False):
         z_mean, z_log_var = self.encoder(x, t)  ## (batch_size, latent_dim+3)
 
         if MAP:
@@ -243,24 +329,33 @@ class ODEVAE(nn.Module):
         else:
             z = z_mean + torch.randn_like(z_mean) * torch.exp(0.5 * z_log_var)
 
-        theta_std = torch.exp(z_log_var[:, 0] * 0.5)
-        theta_logstd = 0.5 * z_log_var[:, 0]
-        kl_div_rot = (
-            -theta_logstd
-            + torch.log(self.theta_prior)
-            + (theta_std**2) / 2 / self.theta_prior**2
-            - 0.5
-        )
+        if self.coord > 0:
+            theta_std = torch.exp(z_log_var[:, 0] * 0.5)
+            theta_logstd = 0.5 * z_log_var[:, 0]
+            kl_div_rot = (
+                -theta_logstd
+                + torch.log(self.theta_prior)
+                + (theta_std**2) / 2 / self.theta_prior**2
+                - 0.5
+            )
 
-        z_mu_content = z_mean[:, 1:]
-        z_std_content = torch.exp(0.5 * z_log_var)[:, 1:]
-        z_logstd_content = 0.5 * z_log_var[:, 1:]
+        z_mu_content = z_mean[:, 1:] if self.coord > 0 else z_mean
+        z_std_content = (
+            torch.exp(0.5 * z_log_var)[:, 1:]
+            if self.coord > 0
+            else torch.exp(0.5 * z_log_var)
+        )
+        z_logstd_content = 0.5 * z_log_var[:, 1:] if self.coord > 0 else 0.5 * z_log_var
 
         z_div_kl = (
             -z_logstd_content + 0.5 * z_std_content**2 + 0.5 * z_mu_content**2 - 0.5
         )
 
-        kl_div = kl_div_rot + torch.sum(z_div_kl, 1)
+        kl_div = (
+            torch.sum(z_div_kl, 1) + kl_div_rot
+            if self.coord > 0
+            else torch.sum(z_div_kl, 1)
+        )
         kl_div = kl_div.mean()
 
         x_p, zs = self.decoder(z, t[:, 0].view(-1))
@@ -272,7 +367,7 @@ class ODEVAE(nn.Module):
             )
         ).mean()
 
-        elbo = log_p_x_g_z - kl_div
+        elbo = log_p_x_g_z - beta * kl_div
 
         return x_p, elbo, log_p_x_g_z, kl_div, zs
 
