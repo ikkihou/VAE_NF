@@ -49,8 +49,8 @@ class NeuralODE(nn.Module):
             self.odefunc,
             y0,
             t,
-            method="rk4",
-            options={"step_size": 0.01, "dtype": torch.float32},
+            # method="dopri8",
+            # options={"step_size": 0.5},
         )
 
 
@@ -63,16 +63,17 @@ class NNODEF(nn.Module):
             self.lin1 = nn.Linear(in_dim, hid_dim)
         else:
             self.lin1 = nn.Linear(in_dim + 1, hid_dim)
-        self.lin2 = nn.Linear(hid_dim, hid_dim)
+        # self.lin2 = nn.Linear(hid_dim, hid_dim)
         self.lin3 = nn.Linear(hid_dim, in_dim)
-        self.relu = nn.ReLU(inplace=True)
+        self.elu = nn.ELU(inplace=True)
+        # self.elu = nn.Tanh()
 
     def forward(self, t, x):
         if not self.time_invariant:
             x = torch.cat((x, t.reshape(1, 1)), dim=-1)
 
-        h = self.relu(self.lin1(x))
-        h = self.relu(self.lin2(h))
+        h = self.elu(self.lin1(x))
+        # h = self.elu(self.lin2(h))
         out = self.lin3(h)
         return out
 
@@ -91,8 +92,8 @@ class RNNEncoder(nn.Module):
             self.act,
             nn.Linear(self.hidden_dim, self.hidden_dim),
             self.act,
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            self.act,
+            # nn.Linear(self.hidden_dim, self.hidden_dim),
+            # self.act,
             nn.Linear(self.hidden_dim, 2 * self.latent_dim),
         )
 
@@ -127,8 +128,8 @@ class LSTMEncoder(nn.Module):
             self.act,
             nn.Linear(self.hidden_dim, self.hidden_dim),
             self.act,
-            nn.Linear(self.hidden_dim, self.hidden_dim),
-            self.act,
+            # nn.Linear(self.hidden_dim, self.hidden_dim),
+            # self.act,
             nn.Linear(self.hidden_dim, 2 * self.latent_dim),
         )
 
@@ -162,18 +163,14 @@ class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
         # )  ## for image content
         # self.activation = nn.Tanh() if act else None
 
-        self.fc_coord = nn.Sequential(
-            nn.Linear(2, hidden_dim), nn.BatchNorm1d(hidden_dim)
-        )
-        self.fc_latent = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim, bias=False), nn.BatchNorm1d(hidden_dim)
-        )
-        self.activation = nn.Tanh()  # 或者尝试 Swish
+        self.fc_coord = nn.Sequential(nn.Linear(2, hidden_dim))
+        self.fc_latent = nn.Sequential(nn.Linear(latent_dim, hidden_dim, bias=False))
+        self.activation = nn.ReLU()  # 或者尝试 Swish
 
         layers = []
-        for _ in range(3):
+        for _ in range(2):
             layers.append(nn.Linear(hidden_dim, hidden_dim))
-            layers.append(nn.Tanh())
+            layers.append(nn.ReLU())
         layers.append(nn.Linear(hidden_dim, n_out))
 
         self.layers = nn.Sequential(*layers)
@@ -222,7 +219,7 @@ class NeuralODEDecoder(nn.Module):
 
         self.dx_prior = Tensor(kwargs.get("dx_prior", [1.0]))
 
-        func = NNODEF(latent_dim + coord, hidden_dim, time_invariant=False)
+        func = NNODEF(latent_dim + coord, hidden_dim // 4, time_invariant=True)
         self.ode = NeuralODE(func)
 
         self.decode_net = (
@@ -233,10 +230,9 @@ class NeuralODEDecoder(nn.Module):
                 self.act,
                 nn.Linear(hidden_dim, hidden_dim),
                 self.act,
-                nn.Linear(hidden_dim, hidden_dim),
-                self.act,
+                # nn.Linear(hidden_dim, hidden_dim),
+                # self.act,
                 nn.Linear(hidden_dim, self.output_dim),
-                nn.Sigmoid(),
             )
         )
 
@@ -247,7 +243,7 @@ class NeuralODEDecoder(nn.Module):
             dx = self.calc_dx(zs, self.dx_prior.to(zs))
             coord = self.transform_coordinate(zs, dx)
 
-            xs = self.decode_net(coord, zs[:, :, 3:])
+            xs = self.decode_net(coord.contiguous(), zs[:, :, self.coord :])
         else:
             xs = self.decode_net(zs)
 
@@ -345,17 +341,14 @@ class ODEVAE(nn.Module):
             if self.coord > 0
             else torch.exp(0.5 * z_log_var)
         )
-        z_logstd_content = 0.5 * z_log_var[:, 1:] if self.coord > 0 else 0.5 * z_log_var
+        # z_logstd_content = 0.5 * z_log_var[:, 1:] if self.coord > 0 else 0.5 * z_log_var
+        z_log_var_content = z_log_var[:, 1:] if self.coord > 0 else z_log_var
 
-        z_div_kl = (
-            -z_logstd_content + 0.5 * z_std_content**2 + 0.5 * z_mu_content**2 - 0.5
+        z_div_kl = -0.5 * torch.sum(
+            1 + z_log_var_content - z_mu_content**2 - z_std_content**2, -1
         )
 
-        kl_div = (
-            torch.sum(z_div_kl, 1) + kl_div_rot
-            if self.coord > 0
-            else torch.sum(z_div_kl, 1)
-        )
+        kl_div = z_div_kl + kl_div_rot if self.coord > 0 else z_div_kl
         kl_div = kl_div.mean()
 
         x_p, zs = self.decoder(z, t[:, 0].view(-1))
