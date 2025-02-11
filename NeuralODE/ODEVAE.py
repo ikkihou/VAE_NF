@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from torchdiffeq import odeint
+import torch.nn.functional as F
 
 from utils.coords import imcoordgrid
 
@@ -163,15 +164,22 @@ class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
         # )  ## for image content
         # self.activation = nn.Tanh() if act else None
 
-        self.fc_coord = nn.Sequential(nn.Linear(2, hidden_dim))
-        self.fc_latent = nn.Sequential(nn.Linear(latent_dim, hidden_dim, bias=False))
-        self.activation = nn.ReLU()  # 或者尝试 Swish
+        self.fc_coord = nn.Sequential(
+            nn.Linear(2, hidden_dim * 4),
+            nn.Linear(hidden_dim * 4, hidden_dim * 4),
+        )
+        self.fc_latent = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim * 4, bias=False),
+            nn.Linear(hidden_dim * 4, hidden_dim * 4, bias=False),
+        )
+        # self.activation = nn.ReLU()  # 或者尝试 Swish
 
         layers = []
         for _ in range(2):
-            layers.append(nn.Linear(hidden_dim, hidden_dim))
-            layers.append(nn.ReLU())
-        layers.append(nn.Linear(hidden_dim, n_out))
+            layers.append(nn.Linear(hidden_dim * 4, hidden_dim * 4))
+            layers.append(nn.Tanh())
+        layers.append(nn.Linear(hidden_dim * 4, n_out))
+        layers.append(nn.Sigmoid())
 
         self.layers = nn.Sequential(*layers)
 
@@ -233,6 +241,7 @@ class NeuralODEDecoder(nn.Module):
                 # nn.Linear(hidden_dim, hidden_dim),
                 # self.act,
                 nn.Linear(hidden_dim, self.output_dim),
+                nn.Sigmoid(),
             )
         )
 
@@ -302,7 +311,7 @@ class ODEVAE(nn.Module):
             self.input_dim,
             self.hidden_dim,
             self.latent_dim + coord,
-            act="relu",
+            act="tanh",
         )
 
         self.decoder = NeuralODEDecoder(
@@ -310,7 +319,7 @@ class ODEVAE(nn.Module):
             self.hidden_dim,
             self.latent_dim,
             coord,
-            act="relu",
+            act="tanh",
             **kwargs,
         )
 
@@ -353,12 +362,16 @@ class ODEVAE(nn.Module):
 
         x_p, zs = self.decoder(z, t[:, 0].view(-1))
 
-        log_p_x_g_z = -(
-            0.5
-            * torch.sum(
-                (x.view(-1, self.input_dim) - x_p.view(-1, self.input_dim)) ** 2, 1
-            )
-        ).mean()
+        #         log_p_x_g_z = -(
+        #             0.5
+        #             * torch.sum(
+        #                 (x.view(-1, self.input_dim) - x_p.view(-1, self.input_dim)) ** 2, 1
+        #             )
+        #         ).mean()
+
+        log_p_x_g_z = -F.binary_cross_entropy(
+            x_p.view(-1, self.input_dim), x.view(-1, self.input_dim), reduction="sum"
+        ) / x.size(0)
 
         elbo = log_p_x_g_z - beta * kl_div
 

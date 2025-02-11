@@ -50,6 +50,7 @@ def transform_coordinates(
     rotmat_r1 = torch.stack([torch.cos(phi), torch.sin(phi)], 1)
     rotmat_r2 = torch.stack([-torch.sin(phi), torch.cos(phi)], 1)
     rotmat = torch.stack([rotmat_r1, rotmat_r2], axis=1)
+
     coord = torch.bmm(coord, rotmat)
 
     return coord + coord_dx
