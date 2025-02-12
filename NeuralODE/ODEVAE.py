@@ -52,6 +52,7 @@ class NeuralODE(nn.Module):
             t,
             # method="dopri8",
             # options={"step_size": 0.5},
+            options={"dtype": torch.float32},
         )
 
 
@@ -109,8 +110,8 @@ class RNNEncoder(nn.Module):
         # Compute latent dimension
         z0 = self.layers(h0[0])
         z0_mean = z0[:, : self.latent_dim]
-        z0_log_var = z0[:, self.latent_dim :]
-        return z0_mean, z0_log_var  ## both (n_timestamps, n_samples, latent_dim)
+        z0_log_std = z0[:, self.latent_dim :]
+        return z0_mean, z0_log_std  ## both (n_timestamps, n_samples, latent_dim)
 
 
 class LSTMEncoder(nn.Module):
@@ -119,16 +120,16 @@ class LSTMEncoder(nn.Module):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
-        self.act = activation_func(act)
+        # self.act = activation_func(act)
 
         # 将 GRU 替换为 LSTM
         self.rnn = nn.LSTM(self.input_dim + 1, self.hidden_dim, num_layers=1)
 
         self.layers = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
-            self.act,
+            activation_func(act),
             nn.Linear(self.hidden_dim, self.hidden_dim),
-            self.act,
+            activation_func(act),
             # nn.Linear(self.hidden_dim, self.hidden_dim),
             # self.act,
             nn.Linear(self.hidden_dim, 2 * self.latent_dim),
@@ -145,8 +146,8 @@ class LSTMEncoder(nn.Module):
         z0 = self.layers(h_n[0])  # 仅使用 h_n
 
         z0_mean = z0[:, : self.latent_dim]
-        z0_log_var = z0[:, self.latent_dim :]
-        return z0_mean, z0_log_var  # 输出形状 (n_timestamps, n_samples, latent_dim)
+        z0_log_std = z0[:, self.latent_dim :]
+        return z0_mean, z0_log_std  # 输出形状 (n_timestamps, n_samples, latent_dim)
 
 
 class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
@@ -165,20 +166,18 @@ class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
         # self.activation = nn.Tanh() if act else None
 
         self.fc_coord = nn.Sequential(
-            nn.Linear(2, hidden_dim * 4),
-            nn.Linear(hidden_dim * 4, hidden_dim * 4),
+            nn.Linear(2, hidden_dim),
         )
         self.fc_latent = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim * 4, bias=False),
-            nn.Linear(hidden_dim * 4, hidden_dim * 4, bias=False),
+            nn.Linear(latent_dim, hidden_dim, bias=False),
         )
         # self.activation = nn.ReLU()  # 或者尝试 Swish
 
         layers = []
         for _ in range(2):
-            layers.append(nn.Linear(hidden_dim * 4, hidden_dim * 4))
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
             layers.append(nn.Tanh())
-        layers.append(nn.Linear(hidden_dim * 4, n_out))
+        layers.append(nn.Linear(hidden_dim, n_out))
         layers.append(nn.Sigmoid())
 
         self.layers = nn.Sequential(*layers)
@@ -223,11 +222,11 @@ class NeuralODEDecoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.coord = coord
-        self.act = activation_func(act)
+        # self.act = activation_func(act)
 
         self.dx_prior = Tensor(kwargs.get("dx_prior", [1.0]))
 
-        func = NNODEF(latent_dim + coord, hidden_dim // 4, time_invariant=True)
+        func = NNODEF(latent_dim + coord, hidden_dim, time_invariant=True)
         self.ode = NeuralODE(func)
 
         self.decode_net = (
@@ -235,9 +234,9 @@ class NeuralODEDecoder(nn.Module):
             if coord > 0
             else nn.Sequential(
                 nn.Linear(latent_dim, hidden_dim),
-                self.act,
+                activation_func(act),
                 nn.Linear(hidden_dim, hidden_dim),
-                self.act,
+                activation_func(act),
                 # nn.Linear(hidden_dim, hidden_dim),
                 # self.act,
                 nn.Linear(hidden_dim, self.output_dim),
@@ -304,8 +303,8 @@ class ODEVAE(nn.Module):
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
         self.coord = coord
-        self.act = activation_func(act)
-        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 0.1)).to(device)
+        # self.act = activation_func(act)
+        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 1.0)).to(device)
 
         self.encoder = LSTMEncoder(
             self.input_dim,
@@ -327,16 +326,16 @@ class ODEVAE(nn.Module):
         self.to(device)
 
     def forward(self, x, t, beta, MAP=False):
-        z_mean, z_log_var = self.encoder(x, t)  ## (batch_size, latent_dim+3)
+        z_mean, z_log_std = self.encoder(x, t)  ## (batch_size, latent_dim+3)
 
         if MAP:
             z = z_mean
         else:
-            z = z_mean + torch.randn_like(z_mean) * torch.exp(0.5 * z_log_var)
+            z = z_mean + torch.randn_like(z_mean) * torch.exp(z_log_std)
 
         if self.coord > 0:
-            theta_std = torch.exp(z_log_var[:, 0] * 0.5)
-            theta_logstd = 0.5 * z_log_var[:, 0]
+            theta_std = torch.exp(z_log_std[:, 0])
+            theta_logstd = z_log_std[:, 0]
             kl_div_rot = (
                 -theta_logstd
                 + torch.log(self.theta_prior)
@@ -346,16 +345,13 @@ class ODEVAE(nn.Module):
 
         z_mu_content = z_mean[:, 1:] if self.coord > 0 else z_mean
         z_std_content = (
-            torch.exp(0.5 * z_log_var)[:, 1:]
-            if self.coord > 0
-            else torch.exp(0.5 * z_log_var)
+            torch.exp(z_log_std[:, 1:]) if self.coord > 0 else torch.exp(z_log_std)
         )
-        # z_logstd_content = 0.5 * z_log_var[:, 1:] if self.coord > 0 else 0.5 * z_log_var
-        z_log_var_content = z_log_var[:, 1:] if self.coord > 0 else z_log_var
+        z_log_std_content = z_log_std[:, 1:] if self.coord > 0 else z_log_std
 
-        z_div_kl = -0.5 * torch.sum(
-            1 + z_log_var_content - z_mu_content**2 - z_std_content**2, -1
-        )
+        z_div_kl = torch.sum(
+            -z_log_std_content + 0.5 * z_std_content**2 + 0.5 * z_mu_content**2 - 0.5, 1
+        )  ## NOTE: 绝对没问题
 
         kl_div = z_div_kl + kl_div_rot if self.coord > 0 else z_div_kl
         kl_div = kl_div.mean()
@@ -369,9 +365,15 @@ class ODEVAE(nn.Module):
         #             )
         #         ).mean()
 
-        log_p_x_g_z = -F.binary_cross_entropy(
-            x_p.view(-1, self.input_dim), x.view(-1, self.input_dim), reduction="sum"
-        ) / x.size(0)
+        log_p_x_g_z = (
+            -F.binary_cross_entropy(
+                x_p.view(-1, self.input_dim),
+                x.view(-1, self.input_dim),
+                reduction="sum",
+            )
+            / x.size(0)
+            / x.size(1)
+        )
 
         elbo = log_p_x_g_z - beta * kl_div
 

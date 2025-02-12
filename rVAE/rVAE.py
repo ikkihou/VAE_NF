@@ -141,8 +141,8 @@ class rVAE(BaseVAE):
         z_std = z_std[:, 1:]
         z_logstd = z_logstd[:, 1:]
 
-        rot = Variable(theta.data.new(b, 2, 2).zero_()) 
-        rot[:, 0, 0] = torch.cos(theta) ## clock-wise rotation
+        rot = Variable(theta.data.new(b, 2, 2).zero_())
+        rot[:, 0, 0] = torch.cos(theta)  ## clock-wise rotation
         rot[:, 0, 1] = torch.sin(theta)
         rot[:, 1, 0] = -torch.sin(theta)
         rot[:, 1, 1] = torch.cos(theta)
