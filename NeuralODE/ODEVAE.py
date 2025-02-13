@@ -50,9 +50,9 @@ class NeuralODE(nn.Module):
             self.odefunc,
             y0,
             t,
-            # method="dopri8",
-            # options={"step_size": 0.5},
-            options={"dtype": torch.float32},
+            method="rk4",
+            options={"step_size": 0.1},
+            # options={"dtype": torch.float32},
         )
 
 
@@ -61,22 +61,27 @@ class NNODEF(nn.Module):
         super(NNODEF, self).__init__()
         self.time_invariant = time_invariant
 
-        if time_invariant:
-            self.lin1 = nn.Linear(in_dim, hid_dim)
-        else:
-            self.lin1 = nn.Linear(in_dim + 1, hid_dim)
-        # self.lin2 = nn.Linear(hid_dim, hid_dim)
+        # 选择输入层：如果时间不变，输入维度是 in_dim，否则是 in_dim + 1
+        input_dim = in_dim if time_invariant else in_dim + 1
+
+        self.lin1 = nn.Linear(input_dim, hid_dim)
+        self.norm1 = nn.LayerNorm(hid_dim)  # 添加归一化层
+
+        self.lin2 = nn.Linear(hid_dim, hid_dim)
+        self.norm2 = nn.LayerNorm(hid_dim)  # 添加归一化层
+
         self.lin3 = nn.Linear(hid_dim, in_dim)
-        self.elu = nn.ELU(inplace=True)
+
+        self.elu = nn.SiLU(inplace=True)
         # self.elu = nn.Tanh()
 
     def forward(self, t, x):
         if not self.time_invariant:
             x = torch.cat((x, t.reshape(1, 1)), dim=-1)
 
-        h = self.elu(self.lin1(x))
-        # h = self.elu(self.lin2(h))
-        out = self.lin3(h)
+        h = self.elu(self.norm1(self.lin1(x)))  # 线性层后加归一化
+        h = self.elu(self.norm2(self.lin2(h)))  # 线性层后加归一化
+        out = self.lin3(h)  # 输出层不需要归一化
         return out
 
 
@@ -88,7 +93,7 @@ class RNNEncoder(nn.Module):
         self.latent_dim = latent_dim
         self.act = activation_func(act)
 
-        self.rnn = nn.GRU(self.input_dim + 1, self.hidden_dim, num_layers=2)
+        self.rnn = nn.GRU(self.input_dim + 1, self.hidden_dim, num_layers=1)
         self.layers = nn.Sequential(
             nn.Linear(self.hidden_dim, self.hidden_dim),
             self.act,
@@ -167,9 +172,11 @@ class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
 
         self.fc_coord = nn.Sequential(
             nn.Linear(2, hidden_dim),
+            nn.Tanh(),
         )
         self.fc_latent = nn.Sequential(
             nn.Linear(latent_dim, hidden_dim, bias=False),
+            nn.Tanh(),
         )
         # self.activation = nn.ReLU()  # 或者尝试 Swish
 
@@ -189,13 +196,13 @@ class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
         coord = coord.view(sq_len * b * n, -1)
 
         h_x = self.fc_coord(coord)
-        h_x = h_x.view(sq_len, b, n, -1)
+        h_x = h_x.view(sq_len, b, n, -1)  ## (sq_len, b, n, hidden)
 
         h_z = 0
         if hasattr(self, "latent_linear"):
             z = z.view(sq_len * b, -1)
             h_z = self.fc_latent(z)
-            h_z = h_z.view(sq_len, b, 1, -1)
+            h_z = h_z.view(sq_len, b, 1, -1)  ##(sq_len, b, 1, hidden)
 
         h = h_z + h_x
         h = h.view(sq_len * b * n, -1)
@@ -306,7 +313,7 @@ class ODEVAE(nn.Module):
         # self.act = activation_func(act)
         self.theta_prior = torch.tensor(kwargs.get("theta_prior", 1.0)).to(device)
 
-        self.encoder = LSTMEncoder(
+        self.encoder = RNNEncoder(
             self.input_dim,
             self.hidden_dim,
             self.latent_dim + coord,
@@ -358,7 +365,7 @@ class ODEVAE(nn.Module):
 
         x_p, zs = self.decoder(z, t[:, 0].view(-1))
 
-        #         log_p_x_g_z = -(
+        # log_p_x_g_z = -(
         #             0.5
         #             * torch.sum(
         #                 (x.view(-1, self.input_dim) - x_p.view(-1, self.input_dim)) ** 2, 1
