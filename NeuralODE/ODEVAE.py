@@ -51,7 +51,7 @@ class NeuralODE(nn.Module):
             y0,
             t,
             method="rk4",
-            options={"step_size": 0.1},
+            options={"step_size": 0.05},
             # options={"dtype": torch.float32},
         )
 
@@ -72,8 +72,7 @@ class NNODEF(nn.Module):
 
         self.lin3 = nn.Linear(hid_dim, in_dim)
 
-        self.elu = nn.SiLU(inplace=True)
-        # self.elu = nn.Tanh()
+        self.elu = nn.ELU(inplace=True)
 
     def forward(self, t, x):
         if not self.time_invariant:
@@ -137,8 +136,10 @@ class LSTMEncoder(nn.Module):
             activation_func(act),
             # nn.Linear(self.hidden_dim, self.hidden_dim),
             # self.act,
-            nn.Linear(self.hidden_dim, 2 * self.latent_dim),
+            # nn.Linear(self.hidden_dim, 2 * self.latent_dim),
         )
+        self.fc1 = nn.Linear(self.hidden_dim, self.latent_dim)
+        self.fc2 = nn.Linear(self.hidden_dim, self.latent_dim)
 
     def forward(self, x, t):
         # 计算时间间隔
@@ -150,67 +151,127 @@ class LSTMEncoder(nn.Module):
         _, (h_n, c_n) = self.rnn(xt.flip((0,)))  # LSTM 额外返回 c_n，但我们不使用它
         z0 = self.layers(h_n[0])  # 仅使用 h_n
 
-        z0_mean = z0[:, : self.latent_dim]
-        z0_log_std = z0[:, self.latent_dim :]
+        z0_mean = self.fc1(z0)
+        z0_log_std = self.fc2(z0)
+
         return z0_mean, z0_log_std  # 输出形状 (n_timestamps, n_samples, latent_dim)
 
 
-class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
+class CoordBoost(nn.Module):
     def __init__(
         self,
         latent_dim: int,
         hidden_dim: int,
         n_out: int = 1,
-        act: bool = False,
     ):
         super(CoordBoost, self).__init__()
-        # self.fc_coord = nn.Linear(2, hidden_dim)  ## for coord matrix
-        # self.fc_latent = nn.Linear(
-        #     latent_dim, hidden_dim, bias=False
-        # )  ## for image content
-        # self.activation = nn.Tanh() if act else None
 
+        # 坐标处理分支
         self.fc_coord = nn.Sequential(
             nn.Linear(2, hidden_dim),
+            nn.LayerNorm(hidden_dim),  # 添加 LayerNorm
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),  # 添加 LayerNorm
             nn.Tanh(),
         )
+
+        # 潜在变量处理分支
         self.fc_latent = nn.Sequential(
             nn.Linear(latent_dim, hidden_dim, bias=False),
+            nn.LayerNorm(hidden_dim),  # 添加 LayerNorm
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim, bias=False),
+            nn.LayerNorm(hidden_dim),  # 添加 LayerNorm
             nn.Tanh(),
         )
-        # self.activation = nn.ReLU()  # 或者尝试 Swish
 
-        layers = []
-        for _ in range(2):
-            layers.append(nn.Linear(hidden_dim, hidden_dim))
-            layers.append(nn.Tanh())
-        layers.append(nn.Linear(hidden_dim, n_out))
-        layers.append(nn.Sigmoid())
+        # 输出层
+        self.output_layers = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),  # 添加 LayerNorm
+            nn.Tanh(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),  # 添加 LayerNorm
+            nn.Tanh(),
+            nn.Linear(hidden_dim, n_out),
+            nn.Sigmoid(),
+        )
 
-        self.layers = nn.Sequential(*layers)
+    def forward(self, coord, z):
+        sq_len, b, n = coord.size(0), coord.size(1), coord.size(2)
+        coord = coord.view(sq_len * b * n, -1)  # 展平坐标
 
-    def forward(self, coord, z):  ## z 仅是content，不包含rotation和translatioon
-        sq_len = coord.size(0)
-        b = coord.size(1)
-        n = coord.size(2)
-        coord = coord.view(sq_len * b * n, -1)
-
+        # 处理坐标
         h_x = self.fc_coord(coord)
-        h_x = h_x.view(sq_len, b, n, -1)  ## (sq_len, b, n, hidden)
+        h_x = h_x.view(sq_len, b, n, -1)  # 恢复形状
 
-        h_z = 0
-        if hasattr(self, "latent_linear"):
-            z = z.view(sq_len * b, -1)
-            h_z = self.fc_latent(z)
-            h_z = h_z.view(sq_len, b, 1, -1)  ##(sq_len, b, 1, hidden)
+        # 处理潜在变量
+        h_z = self.fc_latent(z.view(sq_len * b, -1))
+        h_z = h_z.view(sq_len, b, 1, -1)  # 恢复形状
 
-        h = h_z + h_x
-        h = h.view(sq_len * b * n, -1)
+        # 结合坐标和潜在变量
+        h = h_x + h_z
+        h = h.view(sq_len * b * n, -1)  # 展平
 
-        y = self.layers(h)
-        y = y.view(sq_len, b, -1)
+        # 输出层
+        y = self.output_layers(h)
+        y = y.view(sq_len, b, -1)  # 恢复形状
 
         return y
+
+
+# class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
+#     def __init__(
+#         self,
+#         latent_dim: int,
+#         hidden_dim: int,
+#         n_out: int = 1,
+#     ):
+#         super(CoordBoost, self).__init__()
+
+#         self.fc_coord = nn.Sequential(
+#             nn.Linear(2, hidden_dim),
+#             nn.Tanh(),
+#             # nn.Linear(hidden_dim, hidden_dim),
+#             # nn.Linear(hidden_dim, hidden_dim),
+#         )
+#         self.fc_latent = nn.Sequential(
+#             nn.Linear(latent_dim, hidden_dim, bias=False),
+#             # nn.Linear(hidden_dim, hidden_dim, bias=False),
+#             # nn.Linear(hidden_dim, hidden_dim, bias=False),
+#         )
+
+#         layers = []
+#         for _ in range(3):
+#             layers.append(nn.Linear(hidden_dim, hidden_dim))
+#             layers.append(nn.Tanh())
+#         layers.append(nn.Linear(hidden_dim, n_out))
+#         layers.append(nn.Sigmoid())
+
+#         self.layers = nn.Sequential(*layers)
+
+#     def forward(self, coord, z):  ## z 仅是content，不包含rotation和translatioon
+#         sq_len = coord.size(0)
+#         b = coord.size(1)
+#         n = coord.size(2)
+#         coord = coord.view(sq_len * b * n, -1)
+
+#         h_x = self.fc_coord(coord)
+#         h_x = h_x.view(sq_len, b, n, -1)  ## (sq_len, b, n, hidden)
+
+#         h_z = 0
+#         z = z.view(sq_len * b, -1)
+#         h_z = self.fc_latent(z)
+#         h_z = h_z.view(sq_len, b, 1, -1)  ##(sq_len, b, 1, hidden)
+
+#         h = h_z + h_x
+#         h = h.view(sq_len * b * n, -1)
+
+#         y = self.layers(h)
+#         y = y.view(sq_len, b, -1)
+
+#         return y
 
 
 class NeuralODEDecoder(nn.Module):
@@ -231,7 +292,7 @@ class NeuralODEDecoder(nn.Module):
         self.coord = coord
         # self.act = activation_func(act)
 
-        self.dx_prior = Tensor(kwargs.get("dx_prior", [1.0]))
+        self.dx_prior = Tensor(kwargs.get("dx_prior", [0.1]))
 
         func = NNODEF(latent_dim + coord, hidden_dim, time_invariant=True)
         self.ode = NeuralODE(func)
@@ -269,27 +330,36 @@ class NeuralODEDecoder(nn.Module):
         dx = z_dx * dx_prior
         return dx
 
-    def _make_grid_stack(self, zs):
+    def img2coord(self):
+        m = n = int(math.sqrt(self.input_dim))
+        xgrid = np.linspace(-1, 1, m)
+        ygrid = np.linspace(1, -1, n)
+        x0, x1 = np.meshgrid(xgrid, ygrid)
+        x_coord = np.stack([x0.ravel(), x1.ravel()], 1)
+        x_coord = torch.from_numpy(x_coord).float()
+        return x_coord
+
+    def _make_grid_stack(self, zs):  ## zs(n_timesteps, batchsize, latent_dim)
         sq_len = zs.size(0)
         b = zs.size(1)
-        single_grid = imcoordgrid(self.input_dim)
-        grid_stack = single_grid.view(1, 1, self.input_dim, 2).repeat(sq_len, b, 1, 1)
+        single_grid = self.img2coord()
+        grid_stack = single_grid.view(1, self.input_dim, 2).repeat(sq_len * b, 1, 1)
         return grid_stack
 
     def transform_coordinate(self, zs, dx):
         grid_stack = self._make_grid_stack(zs).to(zs)
-        sq_len = grid_stack.size(0)
-        b = grid_stack.size(1)
+        sq_len = zs.size(0)
+        b = zs.size(1)
 
-        theta = zs[:, :, 0]
-        rotmat_r1 = torch.stack([torch.cos(theta), torch.sin(theta)], dim=-1)
-        rotmat_r2 = torch.stack([-torch.sin(theta), torch.cos(theta)], dim=-1)
-        rotmat = torch.stack([rotmat_r1, rotmat_r2], dim=-1)
+        theta = zs.view(-1, self.latent_dim + self.coord)[:, 0]
+        rotmat_r1 = torch.stack([torch.cos(theta), torch.sin(theta)], dim=1)
+        rotmat_r2 = torch.stack([-torch.sin(theta), torch.cos(theta)], dim=1)
+        rotmat = torch.stack([rotmat_r1, rotmat_r2], dim=1)
 
-        grid_stack_reshaped = grid_stack.view(-1, self.input_dim, 2)
-        rotmat_reshaped = rotmat.view(-1, 2, 2)
+        # grid_stack_reshaped = grid_stack.view(-1, self.input_dim, 2)
+        # rotmat_reshaped = rotmat.view(-1, 2, 2)
 
-        coord_stack_reshape = torch.bmm(grid_stack_reshaped, rotmat_reshaped)
+        coord_stack_reshape = torch.bmm(grid_stack, rotmat)
         coord_stack = coord_stack_reshape.view(sq_len, b, self.input_dim, 2)
         return coord_stack + dx.unsqueeze(2)  ## (sq_len, b, input_dim, 2)
 
@@ -311,9 +381,9 @@ class ODEVAE(nn.Module):
         self.latent_dim = latent_dim
         self.coord = coord
         # self.act = activation_func(act)
-        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 1.0)).to(device)
+        self.theta_prior = torch.tensor(kwargs.get("theta_prior", 0.1)).to(device)
 
-        self.encoder = RNNEncoder(
+        self.encoder = LSTMEncoder(
             self.input_dim,
             self.hidden_dim,
             self.latent_dim + coord,
@@ -333,12 +403,12 @@ class ODEVAE(nn.Module):
         self.to(device)
 
     def forward(self, x, t, beta, MAP=False):
-        z_mean, z_log_std = self.encoder(x, t)  ## (batch_size, latent_dim+3)
+        z_mean, z_log_std = self.encoder(x, t)  ## (batch_size, latent_dim + coord)
 
         if MAP:
             z = z_mean
         else:
-            z = z_mean + torch.randn_like(z_mean) * torch.exp(z_log_std)
+            z = z_mean + torch.randn_like(z_log_std) * torch.exp(z_log_std)
 
         if self.coord > 0:
             theta_std = torch.exp(z_log_std[:, 0])
@@ -352,7 +422,7 @@ class ODEVAE(nn.Module):
 
         z_mu_content = z_mean[:, 1:] if self.coord > 0 else z_mean
         z_std_content = (
-            torch.exp(z_log_std[:, 1:]) if self.coord > 0 else torch.exp(z_log_std)
+            torch.exp(z_log_std)[:, 1:] if self.coord > 0 else torch.exp(z_log_std)
         )
         z_log_std_content = z_log_std[:, 1:] if self.coord > 0 else z_log_std
 
@@ -366,11 +436,11 @@ class ODEVAE(nn.Module):
         x_p, zs = self.decoder(z, t[:, 0].view(-1))
 
         # log_p_x_g_z = -(
-        #             0.5
-        #             * torch.sum(
-        #                 (x.view(-1, self.input_dim) - x_p.view(-1, self.input_dim)) ** 2, 1
-        #             )
-        #         ).mean()
+        #     0.5
+        #     * torch.sum(
+        #         (x.view(-1, self.input_dim) - x_p.view(-1, self.input_dim)) ** 2, 1
+        #     )
+        # ).mean()
 
         log_p_x_g_z = (
             -F.binary_cross_entropy(
