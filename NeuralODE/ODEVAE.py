@@ -246,7 +246,7 @@ class NeuralODEDecoder(nn.Module):
             "2dmanifold",
         ], "mode must be 'train' or '2dmanifold'"
 
-        func = NNODEF(latent_dim + coord, hidden_dim, time_invariant=True)
+        func = NNODEF(latent_dim + coord, hidden_dim, time_invariant=False)
         self.ode = NeuralODE(func)
 
         self.decode_net = (
