@@ -246,8 +246,14 @@ class NeuralODEDecoder(nn.Module):
             "2dmanifold",
         ], "mode must be 'train' or '2dmanifold'"
 
-        func = NNODEF(latent_dim + coord, hidden_dim, time_invariant=False)
-        self.ode = NeuralODE(func)
+        func = NNODEF(latent_dim, hidden_dim, time_invariant=False)
+        func2 = (
+            NNODEF(coord, hidden_dim, time_invariant=False) if self.coord > 0 else None
+        )
+        self.ode = NeuralODE(func)  ## NOTE: for content
+        self.ode2 = (
+            NeuralODE(func2) if func2 is not None else None
+        )  ## NOTE: for rotation and translation
 
         self.decode_net = (
             CoordBoost(latent_dim, hidden_dim)
@@ -265,16 +271,25 @@ class NeuralODEDecoder(nn.Module):
         )
 
     def forward(self, z0, t):
-        zs = self.ode(z0, t)  ## (n_timestamps, batch_size, latent)
+        zs_content = self.ode(
+            z0[:, self.coord :], t
+        )  ## (n_timestamps, batch_size, latent)
+        zs_ro_trans = self.ode2(z0[:, : self.coord], t) if self.coord > 0 else None
+
+        zs = (
+            torch.cat((zs_ro_trans, zs_content), dim=-1)
+            if zs_ro_trans is not None
+            else zs_content
+        )
 
         if self.coord > 0 and self.mode == "train":
             dx = self.calc_dx(zs, self.dx_prior.to(zs))
             coord = self.transform_coordinate(zs, dx)
 
-            xs = self.decode_net(coord.contiguous(), zs[:, :, self.coord :])
+            xs = self.decode_net(coord.contiguous(), zs_content)
         elif self.coord > 0 and self.mode == "2dmanifold":
             coord = self._make_grid_stack(zs).to(zs)
-            xs = self.decode_net(coord.contiguous(), zs[:, :, self.coord :])
+            xs = self.decode_net(coord.contiguous(), zs_content)
         else:
             xs = self.decode_net(zs)
 
