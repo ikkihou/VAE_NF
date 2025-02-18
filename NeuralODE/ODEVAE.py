@@ -221,59 +221,6 @@ class CoordBoost(nn.Module):
         return y
 
 
-# class CoordBoost(nn.Module):  ## 处理的对象是x_coord和z
-#     def __init__(
-#         self,
-#         latent_dim: int,
-#         hidden_dim: int,
-#         n_out: int = 1,
-#     ):
-#         super(CoordBoost, self).__init__()
-
-#         self.fc_coord = nn.Sequential(
-#             nn.Linear(2, hidden_dim),
-#             nn.Tanh(),
-#             # nn.Linear(hidden_dim, hidden_dim),
-#             # nn.Linear(hidden_dim, hidden_dim),
-#         )
-#         self.fc_latent = nn.Sequential(
-#             nn.Linear(latent_dim, hidden_dim, bias=False),
-#             # nn.Linear(hidden_dim, hidden_dim, bias=False),
-#             # nn.Linear(hidden_dim, hidden_dim, bias=False),
-#         )
-
-#         layers = []
-#         for _ in range(3):
-#             layers.append(nn.Linear(hidden_dim, hidden_dim))
-#             layers.append(nn.Tanh())
-#         layers.append(nn.Linear(hidden_dim, n_out))
-#         layers.append(nn.Sigmoid())
-
-#         self.layers = nn.Sequential(*layers)
-
-#     def forward(self, coord, z):  ## z 仅是content，不包含rotation和translatioon
-#         sq_len = coord.size(0)
-#         b = coord.size(1)
-#         n = coord.size(2)
-#         coord = coord.view(sq_len * b * n, -1)
-
-#         h_x = self.fc_coord(coord)
-#         h_x = h_x.view(sq_len, b, n, -1)  ## (sq_len, b, n, hidden)
-
-#         h_z = 0
-#         z = z.view(sq_len * b, -1)
-#         h_z = self.fc_latent(z)
-#         h_z = h_z.view(sq_len, b, 1, -1)  ##(sq_len, b, 1, hidden)
-
-#         h = h_z + h_x
-#         h = h.view(sq_len * b * n, -1)
-
-#         y = self.layers(h)
-#         y = y.view(sq_len, b, -1)
-
-#         return y
-
-
 class NeuralODEDecoder(nn.Module):
     def __init__(
         self,
@@ -293,6 +240,11 @@ class NeuralODEDecoder(nn.Module):
         # self.act = activation_func(act)
 
         self.dx_prior = Tensor(kwargs.get("dx_prior", [0.1]))
+        self.mode = kwargs.get("mode", "train")
+        assert self.mode in [
+            "train",
+            "2dmanifold",
+        ], "mode must be 'train' or '2dmanifold'"
 
         func = NNODEF(latent_dim + coord, hidden_dim, time_invariant=True)
         self.ode = NeuralODE(func)
@@ -315,10 +267,13 @@ class NeuralODEDecoder(nn.Module):
     def forward(self, z0, t):
         zs = self.ode(z0, t)  ## (n_timestamps, batch_size, latent)
 
-        if self.coord > 0:
+        if self.coord > 0 and self.mode == "train":
             dx = self.calc_dx(zs, self.dx_prior.to(zs))
             coord = self.transform_coordinate(zs, dx)
 
+            xs = self.decode_net(coord.contiguous(), zs[:, :, self.coord :])
+        elif self.coord > 0 and self.mode == "2dmanifold":
+            coord = self._make_grid_stack(zs).to(zs)
             xs = self.decode_net(coord.contiguous(), zs[:, :, self.coord :])
         else:
             xs = self.decode_net(zs)
@@ -343,13 +298,14 @@ class NeuralODEDecoder(nn.Module):
         sq_len = zs.size(0)
         b = zs.size(1)
         single_grid = self.img2coord()
-        grid_stack = single_grid.view(1, self.input_dim, 2).repeat(sq_len * b, 1, 1)
+        grid_stack = single_grid.view(1, 1, self.input_dim, 2).repeat(sq_len, b, 1, 1)
         return grid_stack
 
     def transform_coordinate(self, zs, dx):
         grid_stack = self._make_grid_stack(zs).to(zs)
         sq_len = zs.size(0)
         b = zs.size(1)
+        grid_stack = grid_stack.view(sq_len * b, self.input_dim, 2)
 
         theta = zs.view(-1, self.latent_dim + self.coord)[:, 0]
         rotmat_r1 = torch.stack([torch.cos(theta), torch.sin(theta)], dim=1)
@@ -455,28 +411,6 @@ class ODEVAE(nn.Module):
         elbo = log_p_x_g_z - beta * kl_div
 
         return x_p, elbo, log_p_x_g_z, kl_div, zs
-
-    def _loss_func(self):
-        pass
-
-    def manifold2d(self, **kwargs: Union[int, List, str, bool]):
-        d = kwargs.get("d", 9)
-        cmap = kwargs.get("cmap", "gnuplot")
-        in_dim = (int(math.sqrt(self.in_dim)), int(math.sqrt(self.in_dim)))
-        figure = np.zeros((in_dim[0] * d, in_dim[1] * d))
-
-        grid_x = norm.ppf(np.linspace(0.95, 0.05, d))
-        grid_y = norm.ppf(np.linspace(0.05, 0.95, d))
-
-        for i, xi in enumerate(grid_x):
-            for j, yj in enumerate(grid_y):
-                z_sample = np.array([xi, yj])
-
-    def generate_with_seed(self, seed_x, t):
-        seed_t_len = seed_x.shape[0]
-        z_mean, z_log_var = self.encoder(seed_x, t[:seed_t_len])
-        x_p = self.decoder(z_mean, t[:, 0].view(-1))
-        return x_p
 
 
 if __name__ == "__main__":
