@@ -76,7 +76,13 @@ class NNODEF(nn.Module):
 
     def forward(self, t, x):
         if not self.time_invariant:
-            x = torch.cat((x, t.reshape(1, 1)), dim=-1)
+            # 确保 t 和 x 具有相同的 batch 维度
+            if t.ndim == 0:  # 如果 t 是标量
+                t = t.view(1, 1).expand(x.shape[0], 1)  # 变成 (batch_size, 1)
+            elif t.ndim == 1:  # 如果 t 是 (batch_size,)
+                t = t.unsqueeze(-1)  # 变成 (batch_size, 1)
+
+            x = torch.cat((x, t), dim=-1)
 
         h = self.elu(self.norm1(self.lin1(x)))  # 线性层后加归一化
         h = self.elu(self.norm2(self.lin2(h)))  # 线性层后加归一化
@@ -285,7 +291,6 @@ class NeuralODEDecoder(nn.Module):
         if self.coord > 0 and self.mode == "train":
             dx = self.calc_dx(zs, self.dx_prior.to(zs))
             coord = self.transform_coordinate(zs, dx)
-
             xs = self.decode_net(coord.contiguous(), zs_content)
         elif self.coord > 0 and self.mode == "2dmanifold":
             coord = self._make_grid_stack(zs).to(zs)
